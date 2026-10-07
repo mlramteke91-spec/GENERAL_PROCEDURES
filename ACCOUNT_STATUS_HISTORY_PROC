@@ -1,0 +1,66 @@
+````.SQL
+CREATE OR REPLACE PROCEDURE PRMR_ACCSTATUSHISTRY(PO_ERROR     OUT     VARCHAR2,
+                                                  MP_BRANCH    IN      NUMBER,
+                                                  MP_GLCODE    IN      NUMBER
+                                                 )
+AS
+TYPE MP IS RECORD   (Branch_Mst_Id        ACMASTER.BRANCH_MST_ID%TYPE,
+                     Account_Open_Date    ACMASTER.ACCOUNT_OPEN_DATE%TYPE,
+                     New_Ac_Number        ACMASTER.NEW_AC_NUMBER%TYPE,
+                     Sub_Ac_Number        ACMASTER.SUB_AC_NUMBER%TYPE,
+                     Status_Code          ACMASTER.STATUS_CODE%TYPE,
+                     Account_Status_Date  ACMASTER.ACCOUNT_STATUS_DATE%TYPE
+                     ) ;
+TYPE AMP IS TABLE OF MP;
+MPA          AMP;
+MP_AC_STATUS_MST_ID     NUMBER;
+CURSOR C1 (MP_BRANCH    NUMBER,
+           MP_GLCODE    VARCHAR2
+          ) IS SELECT A.Branch_Mst_Id,A.Account_Open_Date,A.New_Ac_Number,A.Sub_Ac_Number,A.Status_Code,A.Account_Status_Date
+             FROM   ACMASTER A WHERE A.BRANCH_MST_ID = MP_BRANCH AND A.GLCODE = MP_GLCODE;
+BEGIN
+  SELECT NVL(MAX(H.AC_STATUS_MST_ID),0) + 1 INTO MP_AC_STATUS_MST_ID FROM ACCOUNT_STATUS_HISTORY H;
+  
+  FOR BR IN (SELECT B.BRANCH_MST_ID FROM BRANCH_INFO_MAST B WHERE (MP_BRANCH IS NULL OR B.BRANCH_MST_ID = MP_BRANCH)
+             ORDER BY 1 ) LOOP
+     FOR GL IN (SELECT G.OLD_GLCODE FROM GLMASTER G WHERE (MP_GLCODE IS NULL OR MP_GLCODE = G.OLD_GLCODE)
+                AND NVL(G.ONLINE_FLAG,'N') = 'Y' AND NVL(G.PARENT_FLAG,'N') = 'N'
+               ) LOOP
+     
+     DELETE FROM ACCOUNT_STATUS_HISTORY T
+     WHERE  T.NEW_AC_NUMBER IN (SELECT A.NEW_AC_NUMBER FROM ACMASTER A 
+                                   WHERE A.BRANCH_MST_ID = BR.BRANCH_MST_ID
+                                   AND   A.GLCODE = GL.OLD_GLCODE
+                                );
+     OPEN C1(BR.BRANCH_MST_ID,GL.OLD_GLCODE );
+     LOOP
+       FETCH C1 BULK COLLECT INTO MPA LIMIT 10000;
+       EXIT WHEN MPA.COUNT = 0;
+       FOR I IN 1 .. MPA.COUNT LOOP
+        IF MPA(I).STATUS_CODE = 'A' THEN
+               INSERT INTO ACCOUNT_STATUS_HISTORY T
+                  (Ac_Status_Mst_Id,Op_Branch_Mst_Id,Transaction_Date,New_Ac_Number,Sub_Ac_Number,Status_Code,Status_Eff_Date,Active_Flag,Enter_User_Id,Pass_User_Id)
+                  Values (MP_AC_STATUS_MST_ID,MPA(I).Branch_Mst_Id,MPA(I).Account_Open_Date,MPA(I).New_Ac_Number,MPA(I).Sub_Ac_Number,
+                          MPA(I).Status_Code,MPA(I).Account_Open_Date,'Y',1,1);
+                 MP_AC_STATUS_MST_ID := MP_AC_STATUS_MST_ID + 1;
+           ELSE
+             INSERT INTO ACCOUNT_STATUS_HISTORY T
+                  (Ac_Status_Mst_Id,Op_Branch_Mst_Id,Transaction_Date,New_Ac_Number,Sub_Ac_Number,Status_Code,Status_Eff_Date,Active_Flag,Enter_User_Id,Pass_User_Id)
+                Values (MP_AC_STATUS_MST_ID,MPA(I).Branch_Mst_Id,MPA(I).Account_Open_Date,MPA(I).New_Ac_Number,MPA(I).Sub_Ac_Number,'A',MPA(I).Account_Open_Date,'Y',1,1);
+                  MP_AC_STATUS_MST_ID := MP_AC_STATUS_MST_ID + 1;
+             INSERT INTO ACCOUNT_STATUS_HISTORY T
+                  (Ac_Status_Mst_Id,Op_Branch_Mst_Id,Transaction_Date,New_Ac_Number,Sub_Ac_Number,Status_Code,Status_Eff_Date,Active_Flag,Enter_User_Id,Pass_User_Id)
+                Values (MP_AC_STATUS_MST_ID,MPA(I).Branch_Mst_Id,MPA(I).Account_Status_Date,MPA(I).New_Ac_Number,MPA(I).Sub_Ac_Number,MPA(I).Status_Code,MPA(I).Account_Status_Date,'Y',1,1);
+                  MP_AC_STATUS_MST_ID := MP_AC_STATUS_MST_ID + 1;
+          END IF;
+     END LOOP;
+     COMMIT;  --AFTRE FETCH 10000 RECORDS
+     END LOOP;
+     CLOSE C1;
+     END LOOP;  --GL
+    END LOOP;  --BR
+EXCEPTION
+  WHEN OTHERS THEN
+    ROLLBACK;
+  PO_ERROR   := SQLERRM ||' - '||DBMS_UTILITY.FORMAT_ERROR_BACKTRACE;
+END PRMR_ACCSTATUSHISTRY; 
